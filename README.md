@@ -41,7 +41,7 @@ protocolo de evaluación y los baselines.
 
 ```bash
 uv sync
-uv run pytest -q                      # 13 pruebas del entorno, los datos y las métricas
+uv run pytest -q                      # 18 pruebas: entorno, datos, métricas y reproducibilidad
 
 # Análisis exploratorio (deja las figuras eda_*.png en resultados/)
 uv run --with jupyter jupyter nbconvert --to notebook --execute --inplace notebooks/eda.ipynb
@@ -72,7 +72,10 @@ En Windows, los comandos `uv` funcionan igual en CMD o PowerShell; `scripts/comp
 un script de bash y se ejecuta desde Git Bash (o WSL).
 
 Las semillas están fijas en los YAML (0 a 4) y los modelos entrenados están en `saves/`,
-así que `prueba` reproduce la tabla final sin reentrenar. Al reentrenar en otra máquina los
+así que `prueba` reproduce la tabla final sin reentrenar. `tests/test_reproducibilidad.py`
+lo comprueba en cada cambio: carga los cinco modelos elegidos, los recorre en el tramo de
+prueba y exige que el retorno, la máxima caída, las operaciones y la curva de capital
+coincidan con `resultados/prueba.json`. Al reentrenar en otra máquina los
 números pueden variar levemente por diferencias de versión de PyTorch.
 
 ## 1. Formulación del problema
@@ -659,7 +662,7 @@ src/agente_inversor/
 └── tracking.py          # registro en MLflow
 resultados/              # tablas, figuras y una ficha JSON por corrida
 saves/                   # modelos entrenados, uno por configuración y semilla
-tests/                   # pruebas del entorno y de las métricas
+tests/                   # pruebas del entorno, de las métricas y de reproducibilidad
 ```
 
 Correspondencia con la estructura sugerida en el enunciado:
