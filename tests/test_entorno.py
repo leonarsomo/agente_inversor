@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from agente_inversor import datos, evaluacion
+from agente_inversor import datos, envs, evaluacion
 from agente_inversor.envs import EntornoInversion
 
 
@@ -73,6 +73,21 @@ def test_recompensa_aversion_duplica_las_perdidas():
     _, r_sube, *_ = env.step(2)
     assert r_baja == pytest.approx(2 * 100 * np.log(0.9))
     assert r_sube == pytest.approx(100 * np.log(1.1))
+
+
+def test_rotacion_penaliza_mover_capital_sin_tocar_el_capital():
+    """La version 4 resta la penalizacion solo en la recompensa, no en el capital."""
+    p = np.full(30, 50.0)  # precio plano: el diferencial vale menos el costo real
+    base = EntornoInversion(p, 20, 30, costo=0.001, recompensa="diferencial")
+    rot = EntornoInversion(p, 20, 30, costo=0.001, recompensa="diferencial_rotacion")
+    base.reset()
+    rot.reset()
+    _, r_base, *_ = base.step(2)  # 0 % -> 100 %
+    _, r_rot, *_ = rot.step(2)
+    assert r_rot == pytest.approx(r_base - 100 * envs.PENALIZACION_ROTACION)
+    assert rot.capital == pytest.approx(base.capital)
+    _, r_quieto, *_ = rot.step(2)  # sin cambio de exposicion: sin penalizacion
+    assert r_quieto == pytest.approx(0.0, abs=1e-9)
 
 
 def test_episodio_aleatorio_dura_lo_pedido_y_no_sale_del_tramo():

@@ -27,23 +27,44 @@ from agente_inversor import datos
 EXPOSICIONES = np.array([0.0, 0.5, 1.0])
 ESCALA = 100.0  # las recompensas van en puntos porcentuales diarios
 
+# Penalizacion de la version 4, en las mismas unidades que la recompensa (puntos
+# porcentuales) por cada unidad de capital que cambia de manos. Se fijo antes de
+# entrenar y no se ajusto con validacion: cinco veces el costo real (0,1 puntos).
+PENALIZACION_ROTACION = 0.005
 
-def _log(r_cartera: float, r_activo: float) -> float:
+
+def _log(r_cartera: float, r_activo: float, cambio: float) -> float:
     """Retorno logaritmico de la cartera, ya neto del costo."""
     return r_cartera
 
 
-def _diferencial(r_cartera: float, r_activo: float) -> float:
+def _diferencial(r_cartera: float, r_activo: float, cambio: float) -> float:
     """Exceso sobre comprar y mantener: estar 100 % invertido sin operar vale 0."""
     return r_cartera - r_activo
 
 
-def _aversion(r_cartera: float, r_activo: float) -> float:
+def _aversion(r_cartera: float, r_activo: float, cambio: float) -> float:
     """Las perdidas pesan el doble que las ganancias."""
     return r_cartera if r_cartera >= 0 else 2.0 * r_cartera
 
 
-RECOMPENSAS = {"log": _log, "diferencial": _diferencial, "aversion": _aversion}
+def _diferencial_rotacion(r_cartera: float, r_activo: float, cambio: float) -> float:
+    """Version 4: el diferencial menos una penalizacion por mover capital.
+
+    El costo real (0,1 %) ya esta en r_cartera, pero es diminuto frente al ruido de
+    un retorno diario (desviacion cercana a 1,5 puntos), asi que casi no deja senal
+    en el aprendizaje. La penalizacion solo cambia la recompensa: el capital y todas
+    las metricas siguen pagando unicamente el costo real.
+    """
+    return r_cartera - r_activo - PENALIZACION_ROTACION * cambio
+
+
+RECOMPENSAS = {
+    "log": _log,
+    "diferencial": _diferencial,
+    "aversion": _aversion,
+    "diferencial_rotacion": _diferencial_rotacion,
+}
 
 
 class EntornoInversion(gym.Env):
@@ -109,7 +130,8 @@ class EntornoInversion(gym.Env):
 
     def step(self, action):
         nueva = float(EXPOSICIONES[int(action)])
-        costo = abs(nueva - self.exposicion) * self.costo
+        cambio = abs(nueva - self.exposicion)
+        costo = cambio * self.costo
         costo_pagado = self.capital * costo  # en unidades de capital (inicial = 1)
         self.exposicion = nueva
 
@@ -118,7 +140,7 @@ class EntornoInversion(gym.Env):
         factor = (1.0 - costo) * (1.0 + nueva * (np.exp(r_activo) - 1.0))
         self.capital *= factor
 
-        recompensa = ESCALA * self._recompensa(float(np.log(factor)), float(r_activo))
+        recompensa = ESCALA * self._recompensa(float(np.log(factor)), float(r_activo), cambio)
         # El final de los datos no es un estado terminal del problema: es un corte.
         truncado = self.t >= self.t_fin
         info = {"capital": self.capital, "exposicion": nueva, "costo": costo_pagado}

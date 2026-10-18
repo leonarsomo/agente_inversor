@@ -35,7 +35,7 @@ def validacion() -> None:
     estilos = {"comprar_y_mantener": "tab:green", "aleatorio": "tab:red", "efectivo": "gray"}
     for nombre, color in estilos.items():
         ax.axhline(base[nombre]["retorno_pct"], color=color, ls="--", label=nombre)
-    ax.set_xticks(range(len(orden)), orden, rotation=20)
+    ax.set_xticks(range(len(orden)), orden, rotation=25, ha="right")
     ax.set_ylabel("Retorno acumulado en validacion (%)")
     ax.set_title("Cinco semillas por configuracion; la raya negra es la mediana")
     ax.legend()

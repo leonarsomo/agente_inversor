@@ -2,8 +2,8 @@
 
   uv run python scripts/analisis_recompensas.py
 
-Carga los 30 modelos de saves/ (2 algoritmos x 3 recompensas x 5 semillas), los recorre
-en validacion y produce:
+Carga los modelos de saves/ (2 algoritmos x 3 recompensas x 5 semillas, mas PPO con la
+version 4 de la recompensa), los recorre en validacion y produce:
 
   - validacion_costos.csv       : metricas por corrida, ahora con costos de transaccion
   - validacion_costos_resumen.csv : mediana por configuracion
@@ -37,6 +37,8 @@ def tabla() -> dict:
     for algo in ALGOS:
         for rec in RECOMPENSAS:
             etiqueta = f"{algo}_{rec}"
+            if not registry.save_path(etiqueta, 0).exists():  # la version 4 solo con PPO
+                continue
             for s in SEMILLAS:
                 modelo = registry.load(algo, etiqueta, s)
                 sim = evaluacion.simular(_env(), evaluacion.politica_modelo(modelo))
@@ -58,17 +60,19 @@ def tabla() -> dict:
 def figura(exposiciones: dict) -> None:
     serie, t = datos.tramo("validacion", config.ENTORNO["ventana"])
     fechas = serie.index[t.inicio + 1 : t.fin]
-    fig, ejes = plt.subplots(4, 1, figsize=(9, 7.5), sharex=True,
-                             gridspec_kw={"height_ratios": [1.6, 1, 1, 1]})
+    recompensas = [r for r in RECOMPENSAS if ("ppo_" + r, 0) in exposiciones]
+    fig, ejes = plt.subplots(len(recompensas) + 1, 1, figsize=(9, 2 + 1.4 * len(recompensas)),
+                             sharex=True,
+                             gridspec_kw={"height_ratios": [1.6] + [1] * len(recompensas)})
     ejes[0].plot(fechas, serie.iloc[t.inicio + 1 : t.fin], color="black", lw=1)
     ejes[0].set_ylabel("Precio GOOGL")
     ejes[0].set_title("Validacion: exposicion diaria de PPO (semilla 0) segun la recompensa")
-    for ax, rec in zip(ejes[1:], RECOMPENSAS, strict=True):
+    for ax, rec in zip(ejes[1:], recompensas, strict=True):
         x = exposiciones[(f"ppo_{rec}", 0)]
         ax.fill_between(fechas, x, step="post", color="tab:blue", alpha=0.5)
         ax.set_ylim(-0.05, 1.05)
         ax.set_yticks([0, 0.5, 1])
-        ax.set_ylabel(rec)
+        ax.set_ylabel(rec.replace("_", "\n"))
     fig.autofmt_xdate()
     fig.tight_layout()
     fig.savefig(RES / "recompensas_posiciones.png", dpi=150)

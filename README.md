@@ -14,7 +14,9 @@ Formulamos la inversión en una sola acción (GOOGL, cierre diario) como un proc
 decisión: cada día el agente observa siete indicadores y decide tener invertido el 0 %, el
 50 % o el 100 % del capital, pagando 0,1 % por el capital que mueve. Comparamos tres
 funciones de recompensa y dos algoritmos (DQN y PPO, de Stable-Baselines3), con cinco
-semillas cada combinación, y elegimos la configuración solo con el tramo de validación.
+semillas cada combinación, y elegimos la configuración solo con el tramo de validación. Una
+cuarta versión de la recompensa, entrenada después de observar a las tres primeras, corrigió
+el exceso de operaciones pero introdujo otro problema, y no cambió la elección (sección 3).
 
 En el tramo de prueba, usado una única vez, el agente elegido (PPO con recompensa
 diferencial) obtuvo una mediana de +37,5 % entre sus cinco semillas, frente a +50,0 % de
@@ -39,7 +41,7 @@ protocolo de evaluación y los baselines.
 
 ```bash
 uv sync
-uv run pytest -q                      # 12 pruebas del entorno, los datos y las métricas
+uv run pytest -q                      # 13 pruebas del entorno, los datos y las métricas
 
 # Análisis exploratorio (deja las figuras eda_*.png en resultados/)
 uv run --with jupyter jupyter nbconvert --to notebook --execute --inplace notebooks/eda.ipynb
@@ -50,6 +52,7 @@ uv run agente-inversor baselines --tramo validacion
 scripts/comparar.sh 2                 # 30 corridas (2 en paralelo), cerca de 30 min en CPU
 uv run agente-inversor tune    --config configs/ppo.yaml --recompensa diferencial
 uv run agente-inversor entrenar --config configs/ppo_tuned.yaml --sufijo _tuned
+uv run agente-inversor entrenar --config configs/ppo.yaml --recompensa diferencial_rotacion
 uv run agente-inversor resumen        # tabla de validación
 
 uv run agente-inversor prueba  --config configs/ppo.yaml --recompensa diferencial
@@ -57,6 +60,7 @@ uv run agente-inversor prueba  --config configs/ppo.yaml --recompensa diferencia
                                --tramo prueba_extendida   # segunda prueba, 2018 a 2025
 uv run python scripts/graficar.py
 uv run python scripts/analisis_recompensas.py   # costos y posiciones por recompensa, en validación
+uv run python scripts/analisis_rigor.py         # rebalanceo e intervalos de confianza (sección 6)
 
 # Solo si se quiere volver a bajar la serie de Yahoo Finance (el CSV ya está en datos/)
 uv run --no-project --with yfinance python scripts/descargar_datos.py
@@ -80,6 +84,15 @@ GOOGL de Yahoo Finance hasta el 31 de diciembre de 2025, guardado en
 `datos/GOOGL_yahoo_2018-07_2025-12.csv`. En los 42 días que comparten, las dos fuentes
 difieren en un factor constante de 20,19 (la división de acciones de 2022, que Yahoo ya
 ajusta), así que los retornos son idénticos y la serie continúa sin salto.
+
+**Procedencia y licencia.** La serie principal es `STOCKS_GOOGL.csv`, distribuida dentro de
+`gym-anytrading` 2.0.0 (licencia MIT): 2.335 velas diarias con fecha, apertura, máximo,
+mínimo, cierre, cierre ajustado y volumen. El paquete no declara de dónde salen los datos;
+el formato de columnas coincide con el de una descarga de Yahoo Finance. El agente usa solo
+el cierre. El CSV de la segunda prueba se bajó con `yfinance` (licencia Apache 2.0 de la
+librería); los datos en sí pertenecen a Yahoo, cuyos términos permiten el uso personal y no
+comercial, y se versionan aquí solo para que la evaluación sea reproducible en un trabajo
+académico. Ningún archivo contiene datos personales.
 
 **Análisis exploratorio** (`notebooks/eda.ipynb`). Lo que se usa para diseñar se mide solo en
 entrenamiento. Los retornos diarios tienen colas pesadas (curtosis en exceso de 13,4, diez días
@@ -166,7 +179,7 @@ Ningún retorno se cobra en dos tramos (`test_los_tramos_no_comparten_retornos` 
 
 ## 3. Diseño de la recompensa
 
-Probamos tres recompensas. En todas, *r* es el retorno logarítmico diario de la cartera ya
+Probamos cuatro recompensas. En todas, *r* es el retorno logarítmico diario de la cartera ya
 neto del costo, en puntos porcentuales.
 
 | Nombre | Definición | Qué esperábamos |
@@ -174,12 +187,15 @@ neto del costo, en puntos porcentuales.
 | `log` | *r* | Maximizar el crecimiento del capital. Es aditiva en el tiempo |
 | `diferencial` | *r* menos el retorno del activo | Premiar solo lo que se gana **respecto a** comprar y mantener. Estar 100 % invertido vale 0 |
 | `aversion` | *r* si es ganancia, 2*r* si es pérdida | Un agente más prudente, con menos caídas |
+| `diferencial_rotacion` | `diferencial` menos 0,5 puntos por cada unidad de capital movida | Menos operaciones que `diferencial`, sin cambiar lo que se mide |
 
 **Iteración del diseño.** Diseñamos las tres recompensas antes de entrenar, cada una pensada
 para corregir un problema esperado de la anterior, y las entrenamos juntas con el mismo
 protocolo (dos algoritmos, cinco semillas, 100.000 pasos) para comparar en igualdad de
 condiciones el comportamiento que inducen. Los resultados confirmaron los problemas que
-motivaron cada cambio:
+motivaron cada cambio. La versión 4 sí recorrió el ciclo completo de forma secuencial: se
+diseñó después de observar el comportamiento de la versión 3, se entrenó y se comparó con
+las anteriores en validación. En orden:
 
 1. **Versión 1, `log`.** Primera recompensa: el crecimiento del capital, la elección
    natural. *Observación:* DQN logra el mejor retorno de entrenamiento de todo el
@@ -196,7 +212,26 @@ motivaron cada cambio:
    lo que se gana respecto al activo, de modo que estar 100 % invertido vale 0 y el agente
    solo se aparta del mercado cuando cree tener un motivo. *Observación:* mejor mediana en
    validación y menor dispersión con PPO. *Problema que queda:* la política de no hacer nada
-   vale 0, un óptimo local cómodo al que varias semillas convergen (sección 6).
+   vale 0, un óptimo local cómodo al que varias semillas convergen (sección 6), y las que no
+   convergen operan mucho: con PPO, las semillas 0, 1 y 2 hacen entre 56 y 66 operaciones en
+   350 días y dos de ellas quedan por debajo de comprar y mantener.
+4. **Versión 4, `diferencial_rotacion`, entrenada después de ver la versión 3.**
+   *Diagnóstico:* el costo real de pasar de 0 % a 100 % es 0,1 puntos, frente a una
+   desviación cercana a 1,5 puntos del retorno diario, así que en la recompensa casi no se
+   distingue del ruido. *Modificación:* restar 0,5 puntos por cada unidad de capital movida,
+   cinco veces el costo real. La penalización solo cambia la recompensa; el capital y las
+   métricas siguen pagando únicamente el 0,1 %. El valor se fijó antes de entrenar y no se
+   ajustó con validación. *Nuevo entrenamiento:* PPO, mismas cinco semillas y 100.000 pasos.
+   *Observación:* la recompensa cumple su propósito, porque la rotación mediana baja de 28,5
+   a 2,5 y los costos de 2,9 % a 0,3 %, pero la mediana en validación cae de +11,7 % a
+   +6,5 %. *Problema nuevo:* las semillas 0 y 4 entran al 50 % el primer día y allí se
+   quedan: la semilla 0 los 350 días (figura de exposición, panel inferior) y la 4 en 348 de
+   350, con dos salidas de un día al 100 %. Cada episodio empieza en
+   efectivo, y pasar a 100 % cuesta el doble de penalización que pasar a 50 %; una vez en
+   50 %, cualquier ajuste vuelve a costar. El agente encontró otro óptimo local cómodo, con
+   la mitad de la caída (7,1 %) y la mitad del retorno. Es una variante del mismo patrón de
+   las versiones 2 y 3: la penalización castiga moverse, y el agente aprende a no moverse
+   desde donde sea más barato quedarse.
 
 Resultados en validación, mediana de cinco semillas por configuración (las métricas se
 calculan siempre sobre el capital real, nunca sobre la recompensa):
@@ -205,6 +240,7 @@ calculan siempre sobre el capital real, nunca sobre la recompensa):
 |---|---|---|---|---|---|---|
 | PPO, `diferencial` | +285,6 % | **+11,7 %** (+5,7 a +20,6) | 14,2 % | 2,9 % | 0,80 | 56 |
 | DQN, `diferencial` | +448,5 % | +6,7 % (+0,4 a +12,4) | 14,6 % | 5,6 % | 0,76 | 97 |
+| PPO, `diferencial_rotacion` (versión 4) | +101,7 % | +6,5 % (−7,4 a +9,3) | 7,8 % | 0,3 % | 0,50 | 5 |
 | PPO, `log` | +177,4 % | +6,3 % (−6,3 a +14,4) | 13,3 % | 3,2 % | 0,78 | 61 |
 | DQN, `aversion` | +122,5 % | +5,7 % (−1,1 a +9,7) | 3,3 % | 1,9 % | 0,05 | 23 |
 | PPO, `aversion` | +12,6 % | 0,0 % (−2,6 a +3,9) | 0,5 % | 0,2 % | 0,01 | 2 |
@@ -213,7 +249,7 @@ calculan siempre sobre el capital real, nunca sobre la recompensa):
 | *Agente aleatorio* | | *−8,9 %* | *16,3 %* | *14,8 %* | *0,50* | *234* |
 
 Los costos se expresan en porcentaje del capital inicial (sobre $100.000, 2,9 % son $2.900) y
-salen de `scripts/analisis_recompensas.py`, que vuelve a recorrer los 30 modelos guardados en
+salen de `scripts/analisis_recompensas.py`, que vuelve a recorrer los 35 modelos guardados en
 validación sin reentrenarlos. En DQN con `log` los costos (8,5 %) son más que toda su pérdida
 neta (−4,1 %): antes de costos habría ganado algo, y lo destruyó operando 100 veces.
 
@@ -237,6 +273,10 @@ neta (−4,1 %): antes de costos habría ganado algo, y lo destruyó operando 10
   operaciones); las otras tres operan activamente.
 - **PPO generaliza mejor que DQN** con la misma recompensa en `log` y `diferencial`. La
   brecha entre entrenamiento y validación es menor.
+- **`diferencial_rotacion` deja de operar y se estaciona en 50 %.** Con la versión 4 los
+  costos caen a la décima parte, aunque lo que el agente aprende es a quedarse quieto en una
+  posición intermedia. Penalizar la acción, en vez del resultado, cambia de lugar el óptimo
+  local sin eliminarlo.
 
 Ninguna configuración supera a comprar y mantener en la mediana de validación.
 
@@ -288,6 +328,17 @@ cinco semillas completas la mediana fue +11,65 %, idéntica a la de los hiperpar
 originales, y tres de las cinco semillas convergieron a comprar y mantener. No hubo mejora,
 así que conservamos los hiperparámetros originales. El +15,3 % era en parte suerte de dos
 semillas: elegir el máximo entre 15 pruebas ruidosas sobreestima.
+
+Las dos medianas coinciden hasta el decimal catorce (11,65080586 %) aunque los modelos son
+distintos, porque en las dos configuraciones la semilla que queda en la mediana sale del
+mercado los mismos dos días y hace exactamente el mismo recorrido. Dicho
+de otro modo, la configuración ganadora se eligió por una semilla que casi no opera, lo cual
+refuerza lo que la sección 6 dice del óptimo local de `diferencial`.
+
+**Versión 4 de la recompensa.** Se entrenó cuando este protocolo ya estaba cerrado y la
+prueba ya se había usado, así que solo se comparó en validación. Su mediana (+6,5 %) queda
+por debajo de la de PPO con `diferencial`, de modo que la selección del paso 2 no cambia y
+el tramo de prueba no se volvió a evaluar.
 
 Los baselines son comprar y mantener, 50 % fijo, quedarse en efectivo, y un agente
 aleatorio (promedio de 100 semillas).
@@ -414,15 +465,38 @@ cual es compatible con haber evitado uno o dos días malos por azar.
   selección ya estaba ajustándose al ruido.
 - **Costos simplificados.** Un 0,1 % fijo, sin diferencial de compra y venta, sin
   deslizamiento y sin impuestos. Las semillas que operan unas 50 veces serían las más
-  afectadas por costos reales.
+  afectadas por costos reales. Además, con exposición de 50 % el entorno aplica cada día el
+  retorno a la mitad del capital, lo que equivale a rebalancear gratis cada noche.
+  `scripts/analisis_rigor.py` repite la contabilidad cobrando ese rebalanceo: la diferencia
+  es de 0,1 puntos o menos en la prueba y de 1,3 a 1,6 puntos en los siete años de la
+  segunda prueba (semillas 0 y 1 y el baseline de 50 % fijo). Las semillas que solo usan
+  0 % y 100 % no cambian. Ninguna conclusión depende de este detalle.
 - **Indicadores solo de precio.** Si el precio diario ya incorpora la información pública,
   hay poca señal que extraer de él.
 - **Cinco semillas** alcanzan para ver que la dispersión es grande, no para estimar bien
   una diferencia de medianas.
 
+**¿Alguna semilla le gana a comprar y mantener con significancia?** No. Para cada semilla
+se tomó el exceso diario de retorno logarítmico sobre comprar y mantener y se remuestreó
+por bloques de 20 días (5.000 réplicas), que conservan la agrupación de la volatilidad
+(Künsch, 1989). El intervalo del 95 % del exceso acumulado, en puntos:
+
+| Semilla | Prueba: exceso (IC 95 %) | Segunda prueba: exceso (IC 95 %) |
+|---|---|---|
+| 0 | −17,0 (−31,4 a +1,4) | −37,1 (−100,2 a +24,6) |
+| 1 | −19,8 (−29,9 a −4,9) | −38,0 (−95,8 a +20,2) |
+| 2 | +7,9 (−3,5 a +25,4) | −61,9 (−136,8 a +5,1) |
+| 3 | −8,7 (−19,0 a −0,4) | +18,1 (−1,5 a +38,5) |
+| 4 | +5,0 (0,0 a +15,1) | +6,2 (−1,0 a +15,2) |
+
+Ningún intervalo queda por encima de cero en ninguno de los dos tramos. Las semillas 1 y 3
+sí quedan por debajo en la prueba. La semilla 4, que se veía como la mejor, tiene su límite
+inferior en cero, lo que coincide con la sección 5: toda su ventaja sale de un solo día.
+
 **Reward hacking.** El caso claro es `aversion` (sección 3). `diferencial` tiene uno más
 sutil: la política que no hace nada (100 % invertido siempre) recibe recompensa 0, que es
-un óptimo local cómodo, y varias semillas terminan ahí.
+un óptimo local cómodo, y varias semillas terminan ahí. La versión 4 muestra que el patrón
+se repite con otra forma: al penalizar la rotación, el agente se queda quieto en 50 %.
 
 **Qué haríamos después.** Entrenar con varios activos, o con periodos que incluyan caídas,
 para que el agente vea más regímenes; evaluar con ventanas móviles (*walk-forward*) en
@@ -517,13 +591,60 @@ más me sirvió fue tratar el entorno como código de producción, con pruebas a
 verifican que no se usa información del futuro y que la contabilidad cuadra. En este problema,
 la confianza en el resultado depende más de esas pruebas que del algoritmo.
 
+### Leonar Socarrás Molina
+
+**¿Cuál fue el resultado que más me sorprendió?** Que la configuración ganadora en
+validación se decidiera, en su mediana, por una semilla que casi no opera. PPO con
+`diferencial` y su versión ajustada con Optuna dan la misma mediana hasta el decimal
+catorce, porque en ambas la semilla central sale del mercado los mismos dos días y repite
+el recorrido de comprar y mantener. La mediana se eligió para protegerse de semillas
+extremas, y terminó premiando la cercanía al baseline. Es el mismo fenómeno que aparece con
+retornos compuestos, donde la media y el resultado típico se separan: el estadístico de
+resumen decide qué se considera aprender.
+
+**¿Qué decisión metodológica tuvo mayor impacto en el agente?** Medir siempre sobre el
+capital real y nunca sobre la recompensa. Esa separación entre lo que el agente optimiza y
+lo que se evalúa permitió reconocer el *reward hacking* de `aversion` y, después, probar la
+versión 4 sin tocar las métricas: la penalización por rotación existe solo en la señal de
+aprendizaje, y por eso su efecto se pudo leer con la misma regla que las demás
+recompensas.
+
+**¿Qué cambiaría si tuviera que repetir el experimento?** Calcularía antes de entrenar
+cuántas semillas hacen falta para detectar la diferencia que interesa. Con una dispersión
+de unos 40 puntos entre semillas en el tramo de prueba, cinco semillas no alcanzan para
+distinguir 10 o 15 puntos frente a comprar y mantener, y el bootstrap por bloques lo
+confirmó: ningún intervalo queda por encima de cero. Henderson et al. (2018) documentan
+ese mismo problema en *Deep RL*, donde dos grupos de cinco semillas del mismo algoritmo
+llegan a dar curvas estadísticamente distintas. Fijar ese tamaño de efecto desde el
+principio habría cambiado la pregunta, de "¿gana el agente?" a "¿con qué evidencia
+podríamos saberlo?".
+
+**¿Qué comportamiento del agente no logré explicar completamente?** Por qué la versión 4 se
+estaciona en 50 % y no en 100 %. Entrar al 100 % cuesta 0,25 puntos más de penalización que
+entrar al 50 %, una sola vez por episodio, mientras que quedarse en 50 % con la recompensa
+`diferencial` cede la mitad de cada subida, unos 10 puntos en un año alcista. La asimetría
+del costo de entrada es real, aunque su tamaño no alcanza para justificar ese óptimo. Queda
+la sospecha de que la penalización vuelve demasiado costosa la exploración temprana y la
+política se fija antes de ver el beneficio de estar invertido, sin que se haya verificado.
+
+**¿Cuál fue la principal diferencia entre lo aprendido en Reinforcement Learning y su
+aplicación a este problema?** En los casos del curso, como AlphaGo, el error es
+inequívoco y por eso funciona como motor del aprendizaje: una jugada mala se paga en la
+partida. Aquí el error y la suerte se confunden, porque un día afortunado basta para que
+una semilla parezca hábil. Desde la docencia, el *reward hacking*, que Amodei et al. (2016)
+describen como la optimización de un objetivo mal especificado, recuerda al estudiante que
+aprende a obtener la nota sin comprender el contenido: `aversion` y la versión 4 cumplen su
+recompensa con un aprendizaje superficial. Diseñar la recompensa resultó ser
+tan delicado como diseñar una evaluación.
+
 ## 8. Estructura
 
 ```
 configs/                 # un YAML por algoritmo: entorno, hiperparámetros, búsqueda
 datos/                   # GOOGL de Yahoo Finance, 2018 a 2025, para la segunda prueba
 notebooks/eda.ipynb      # análisis exploratorio de los datos y auditoría de lookahead
-scripts/analisis_recompensas.py  # costos y posiciones de las 30 corridas en validación
+scripts/analisis_recompensas.py  # costos y posiciones de las 35 corridas en validación
+scripts/analisis_rigor.py        # rebalanceo no cobrado e intervalos de confianza
 scripts/comparar.sh      # la rejilla completa de corridas
 scripts/descargar_datos.py  # baja el CSV de datos/ (yfinance)
 scripts/graficar.py      # figuras del informe
@@ -571,6 +692,13 @@ y la interpretación de los resultados fueron revisados por el equipo.
   *Nature, 518*, 529-533.
 - Akiba, T., Sano, S., Yanase, T., Ohta, T., & Koyama, M. (2019). Optuna: A next-generation
   hyperparameter optimization framework. *KDD '19*.
+- Amodei, D., Olah, C., Steinhardt, J., Christiano, P., Schulman, J., & Mané, D. (2016).
+  Concrete problems in AI safety. *arXiv:1606.06565*.
+- Henderson, P., Islam, R., Bachman, P., Pineau, J., Precup, D., & Meger, D. (2018). Deep
+  reinforcement learning that matters. *Proceedings of the AAAI Conference on Artificial
+  Intelligence, 32*(1).
+- Künsch, H. R. (1989). The jackknife and the bootstrap for general stationary
+  observations. *The Annals of Statistics, 17*(3), 1217-1241.
 - Sutton, R. S., & Barto, A. G. (2018). *Reinforcement learning: An introduction* (2.ª ed.).
   MIT Press.
 - Haghpanah, A. (s. f.). *gym-anytrading* [Software]. https://github.com/AminHP/gym-anytrading
